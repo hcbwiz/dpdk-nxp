@@ -135,20 +135,6 @@ static void
 lsinic_txq_loop(uint16_t dq_sync);
 
 static bool
-lsinic_timeout(struct lsinic_queue *q)
-{
-	uint64_t timer_period;
-
-	if (!q->new_time_thresh)
-		return false;
-	timer_period = rte_rdtsc() - q->new_tsc;
-	if (timer_period >= q->new_time_thresh)
-		return true;
-	else
-		return false;
-}
-
-static bool
 lsinic_queue_running(struct lsinic_queue *q)
 {
 	return q->status == LSINIC_QUEUE_RUNNING;
@@ -383,7 +369,6 @@ lsinic_queue_reset(struct lsinic_queue *q)
 	q->next_dma_idx = 0;
 	q->next_avail_idx = 0;
 	q->next_used_idx = 0;
-	q->new_desc = 0;
 	q->errors = 0;
 	q->drop_packet_num = 0;
 	q->ring_full = 0;
@@ -2313,12 +2298,9 @@ lsinic_tx_merge_one_to_txq(struct lsinic_queue *txq,
 	}
 
 	ret = lsinic_xmit_merged_one_pkt(txq, buf, free_pkt);
-	if (unlikely(ret != 1)) {
+	if (unlikely(ret != 1))
 		rte_pktmbuf_free(buf);
-	} else {
-		if (txq->new_desc == 0)
-			txq->new_tsc = rte_rdtsc();
-	}
+
 	txq->mg_dsc_head = (txq->mg_dsc_head + 1) & (txq->nb_desc - 1);
 
 	txq->recycle_pending--;
@@ -3102,7 +3084,6 @@ lsinic_dpaa2_split_tx_lpbk(void *queue,
 		len + LSINIC_ETH_OVERHEAD_SIZE * fd_idx;
 
 	lsinic_q->packets += fd_idx;
-	lsinic_q->new_desc += fd_idx;
 
 	if (fd_idx > 0) {
 		lsinic_dpaa2_enqueue(txq, fd_arr, fd_idx);
@@ -4110,12 +4091,6 @@ lsinic_queue_start(struct lsinic_queue *q)
 		q->type == LSINIC_QUEUE_TX ? "tx" : "rx",
 		q->reg_idx, q->nb_desc);
 
-	q->new_time_thresh =
-		LSINIC_READ_REG(&ring_reg->iir) *
-		rte_get_timer_hz() / 1000000; /* ns->s */
-	q->new_desc_thresh = LSINIC_READ_REG(&ring_reg->icr);
-	q->new_desc_thresh &= LSINIC_INT_THRESHOLD_MASK;
-
 	if (lsinic_dev->mmsi_flag != LSINIC_DONT_INT) {
 		msix_vector =
 			(LSINIC_READ_REG(&ring_reg->icr) >>
@@ -4340,7 +4315,6 @@ lsinic_queue_alloc(struct lsinic_adapter *adapter,
 	enum LSINIC_QEUE_TYPE type)
 {
 	struct lsinic_queue *q;
-	uint32_t tx_rs_thresh;
 
 #ifdef RTE_LSINIC_PKT_MERGE_ACROSS_PCIE
 	RTE_SET_USED(lsinic_cloned_mbuf_to_fd);
@@ -4358,8 +4332,6 @@ lsinic_queue_alloc(struct lsinic_adapter *adapter,
 		return NULL;
 	}
 
-	tx_rs_thresh = DEFAULT_TX_RS_THRESH;
-
 	/* First allocate the tx queue data structure */
 	if (type == LSINIC_QUEUE_RX)
 		q = &adapter->rxqs[queue_idx];
@@ -4370,7 +4342,6 @@ lsinic_queue_alloc(struct lsinic_adapter *adapter,
 	q->type = type;
 
 	q->nb_desc = nb_desc;
-	q->new_desc_thresh = tx_rs_thresh;
 	q->queue_id = queue_idx;
 	q->reg_idx = queue_idx;
 	q->nb_q = 1;
@@ -4436,23 +4407,12 @@ lsinic_queue_trigger_interrupt(struct lsinic_queue *q)
 	if (likely(lsinic_dev->mmsi_flag == LSX_PCIEP_DONT_INT))
 		return;
 
-	if (!q->new_desc_thresh) {
-		q->new_desc = 0;
-		return;
-	}
 	if (lsinic_queue_msi_masked(q))
 		return;
 
-	if (!q->new_desc)
-		return;
-
 	if (!lsx_pciep_hw_sim_get(adapter->pcie_idx)) {
-		if (q->new_desc_thresh && (q->new_desc >= q->new_desc_thresh ||
-			(lsinic_timeout(q)))) {
-			/* MSI */
-			lsx_pciep_start_msix(q->msix_vaddr, q->msix_cmd);
-			q->new_desc = 0;
-		}
+		/* MSI/MSIx */
+		lsx_pciep_start_msix(q->msix_vaddr, q->msix_cmd);
 	}
 }
 
@@ -4512,8 +4472,8 @@ lsinic_tx_notify_burst_to_rc(struct lsinic_queue *txq)
 	}
 #endif
 	txq->next_used_idx += i;
-	txq->new_desc += i;
-	lsinic_queue_trigger_interrupt(txq);
+	if (likely(i > 0))
+		lsinic_queue_trigger_interrupt(txq);
 }
 
 static void
@@ -4543,8 +4503,8 @@ lsinic_tx_seg_notify_to_rc(struct lsinic_queue *txq)
 	}
 
 	txq->next_used_idx += pending;
-	txq->new_desc += pending;
-	lsinic_queue_trigger_interrupt(txq);
+	if (likely(pending > 0))
+		lsinic_queue_trigger_interrupt(txq);
 }
 
 static void
@@ -4579,9 +4539,9 @@ lsinic_tx_update_to_rc(struct lsinic_queue *txq)
 	}
 
 	txq->next_used_idx += i;
-	txq->new_desc += i;
 
-	lsinic_queue_trigger_interrupt(txq);
+	if (likely(i > 0))
+		lsinic_queue_trigger_interrupt(txq);
 }
 
 static uint16_t
@@ -4786,9 +4746,6 @@ lsinic_xmit_pkts_burst(struct lsinic_queue *txq,
 free_last_pkts:
 	if (free_idx > 0)
 		rte_pktmbuf_free_bulk(free_pkts, free_idx);
-
-	if (!txq->new_desc)
-		txq->new_tsc = rte_rdtsc();
 
 	if (unlikely(!txq->pair)) {
 		if (!(txq->dma_bd_update & DMA_BD_EP2RC_UPDATE))
@@ -5214,9 +5171,6 @@ lsinic_recv_idx_bulk_alloc_buf(struct lsinic_queue *rxq)
 			rxq->rxq_dma_eq(rxq, true, false);
 		}
 		rxq->rxq_dma_eq(rxq, false, true);
-
-		if (rxq->new_desc == 0)
-			rxq->new_tsc = rte_rdtsc();
 	} else {
 		rxq->next_avail_idx -= bd_num;
 	}
@@ -5319,9 +5273,6 @@ lsinic_recv_addrl_bulk_alloc_buf(struct lsinic_queue *rxq)
 			rxq->rxq_dma_eq(rxq, true, false);
 		}
 		rxq->rxq_dma_eq(rxq, false, true);
-
-		if (rxq->new_desc == 0)
-			rxq->new_tsc = rte_rdtsc();
 	} else {
 		rxq->next_avail_idx -= bd_num;
 	}
@@ -5459,9 +5410,6 @@ lsinic_recv_bd_bulk_alloc_buf(struct lsinic_queue *rxq)
 			rxq->rxq_dma_eq(rxq, true, false);
 		}
 		rxq->rxq_dma_eq(rxq, false, true);
-
-		if (rxq->new_desc == 0)
-			rxq->new_tsc = rte_rdtsc();
 	} else {
 		rxq->next_avail_idx -= bd_num;
 	}
@@ -5605,9 +5553,6 @@ lsinic_recv_bd(struct lsinic_queue *rxq)
 
 	rxq->rxq_dma_eq(rxq, false, true);
 
-	if (rxq->new_desc == 0)
-		rxq->new_tsc = rte_rdtsc();
-
 	rxq->loop_avail++;
 
 	return bd_num;
@@ -5747,10 +5692,8 @@ lsinic_rxq_loop(struct lsinic_queue *rxq)
 	if ((rxq->dma_bd_update & DMA_BD_RC2EP_UPDATE) && !rc_recvd)
 		rxq->rxq_dma_eq(rxq, false, true);
 
-	if (!rxq->adapter->rxq_dma_silent) {
+	if (!rxq->adapter->rxq_dma_silent)
 		rxq->dma_dq(rxq);
-		lsinic_queue_trigger_interrupt(rxq);
-	}
 
 #ifdef RTE_LSINIC_PKT_MERGE_ACROSS_PCIE
 	if (rxq->recycle_rxq) {
@@ -6074,7 +6017,6 @@ lsinic_dpaa2_recv_pkts_sbd(struct lsinic_queue *rxq,
 			rxq->bytes_overhead += len +
 				LSINIC_ETH_OVERHEAD_SIZE * count;
 			rxq->packets += count;
-			rxq->new_desc += count;
 			fd_idx += count;
 			if (fd_idx >= MAX_TX_RING_SLOTS) {
 				lsinic_dpaa2_enqueue(rxq->recycle_txq,
@@ -6158,7 +6100,6 @@ lsinic_dpaa2_recv_pkts(struct lsinic_queue *rxq,
 			rxq->bytes_overhead += len +
 				LSINIC_ETH_OVERHEAD_SIZE * count;
 			rxq->packets += count;
-			rxq->new_desc += count;
 			fd_idx += count;
 			if (fd_idx >= MAX_TX_RING_SLOTS) {
 				lsinic_dpaa2_enqueue(rxq->recycle_txq,
@@ -6458,6 +6399,7 @@ lsinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	double cyc_per_us = rxq->adapter->cycs_per_us;
 	double curr_latency;
 #endif
+	uint64_t pkt_old = rxq->packets;
 
 	if (unlikely(!rxq->ep_enabled))
 		return 0;
@@ -6547,8 +6489,9 @@ lsinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 #endif
 	}
 
-	rxq->new_desc += nb_rx;
 	rxq->packets += nb_rx;
+	if (rxq->packets > pkt_old)
+		lsinic_queue_trigger_interrupt(rxq);
 
 	return nb_rx;
 }
