@@ -15,6 +15,7 @@ EXPERIMENTAL {
 	rte_pmd_dpaa2_set_opr;
 	# added in 21.08
 	rte_pmd_dpaa2_thread_init;
+	rte_pmd_dpaa2_thread_warmup;
 	# added in 21.11
 	rte_pmd_dpaa2_get_tlu_hash;
 };
