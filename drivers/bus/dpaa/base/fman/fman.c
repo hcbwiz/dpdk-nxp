@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2010-2016 Freescale Semiconductor Inc.
- * Copyright 2017-2020 NXP
+ * Copyright 2017-2022 NXP
  *
  */
 
@@ -28,6 +28,7 @@ u32 fman_dealloc_bufs_mask_lo;
 
 int fman_ccsr_map_fd = -1;
 static COMPAT_LIST_HEAD(__ifs);
+void *rtc_map;
 
 /* This is the (const) global variable that callers have read-only access to.
  * Internally, we have read-write access directly to __ifs.
@@ -153,7 +154,7 @@ static void fman_if_vsp_init(struct __fman_if *__if)
 	size_t lenp;
 	const uint8_t mac_idx[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1};
 
-	if (__if->__if.mac_type == fman_mac_1g) {
+	if (__if->__if.mac_idx <= 8) {
 		for_each_compatible_node(dev, NULL,
 			"fsl,fman-port-1g-rx-extended-args") {
 			prop = of_get_property(dev, "cell-index", &lenp);
@@ -176,7 +177,7 @@ static void fman_if_vsp_init(struct __fman_if *__if)
 				}
 			}
 		}
-	} else if (__if->__if.mac_type == fman_mac_10g) {
+	} else {
 		for_each_compatible_node(dev, NULL,
 			"fsl,fman-port-10g-rx-extended-args") {
 			prop = of_get_property(dev, "cell-index", &lenp);
@@ -497,6 +498,39 @@ fman_if_init(const struct device_node *dpa_node)
 		goto err;
 	}
 
+	regs_addr = of_get_address(tx_node, 0, &__if->regs_size, NULL);
+	if (!regs_addr) {
+		FMAN_ERR(-EINVAL, "of_get_address(%s)\n", mname);
+		goto err;
+	}
+	phys_addr = of_translate_address(tx_node, regs_addr);
+	if (!phys_addr) {
+		FMAN_ERR(-EINVAL, "of_translate_address(%s, %p)\n",
+			mname, regs_addr);
+		goto err;
+	}
+	__if->tx_bmi_map = mmap(NULL, __if->regs_size,
+				PROT_READ | PROT_WRITE, MAP_SHARED,
+				fman_ccsr_map_fd, phys_addr);
+	if (__if->tx_bmi_map == MAP_FAILED) {
+		FMAN_ERR(-errno, "mmap(0x%"PRIx64")\n", phys_addr);
+		goto err;
+	}
+
+	if (!rtc_map) {
+		__if->rtc_map = mmap(NULL, FMAN_IEEE_1588_SIZE,
+				PROT_READ | PROT_WRITE, MAP_SHARED,
+				fman_ccsr_map_fd, FMAN_IEEE_1588_OFFSET);
+		if (__if->rtc_map == MAP_FAILED) {
+			pr_err("Can not map FMan RTC regs base\n");
+			_errno = -EINVAL;
+			goto err;
+		}
+		rtc_map = __if->rtc_map;
+	} else {
+		__if->rtc_map = rtc_map;
+	}
+
 	/* No channel ID for MAC-less */
 	assert(lenp == sizeof(*tx_channel_id));
 	na = of_n_addr_cells(mac_node);
@@ -507,7 +541,11 @@ fman_if_init(const struct device_node *dpa_node)
 	 */
 	rx_phandle = of_get_property(dpa_node, rprop, &lenp);
 	if (!rx_phandle) {
-		FMAN_ERR(-EINVAL, "%s: no fsl,qman-frame-queues-rx\n", dname);
+		_errno = -EINVAL;
+		if (!getenv("OLDEV_ENABLED")) {
+			FMAN_ERR(_errno, "%s: no fsl,qman-frame-queues-rx\n",
+				 dname);
+		}
 		goto err;
 	}
 
@@ -691,15 +729,15 @@ fman_init(void)
 	for_each_child_node(parent_node, dpa_node) {
 		_errno = fman_if_init(dpa_node);
 		if (_errno) {
-			FMAN_ERR(_errno, "if_init(%s)\n", dpa_node->full_name);
-			goto err;
+			if (!getenv("OLDEV_ENABLED")) {
+				FMAN_ERR(_errno, "if_init(%s)\n",
+					 dpa_node->full_name);
+				return _errno;
+			}
 		}
 	}
 
 	return 0;
-err:
-	fman_finish();
-	return _errno;
 }
 
 void

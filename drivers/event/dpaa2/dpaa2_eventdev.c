@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2017,2019 NXP
+ * Copyright 2017,2019-2022 NXP
  */
 
 #include <assert.h>
@@ -175,7 +175,7 @@ send_partial:
 				if (retry_count > DPAA2_EV_TX_RETRY_COUNT) {
 					num_tx += loop;
 					nb_events -= loop;
-					return num_tx + loop;
+					return num_tx;
 				}
 			} else {
 				loop += ret;
@@ -708,15 +708,10 @@ dpaa2_eventdev_eth_queue_add_all(const struct rte_eventdev *dev,
 		if (ret) {
 			DPAA2_EVENTDEV_ERR(
 				"Event queue attach failed: err(%d)", ret);
-			goto fail;
+			return ret;
 		}
 	}
 	return 0;
-fail:
-	for (i = (i - 1); i >= 0 ; i--)
-		dpaa2_eth_eventq_detach(eth_dev, i);
-
-	return ret;
 }
 
 static int
@@ -747,49 +742,14 @@ dpaa2_eventdev_eth_queue_add(const struct rte_eventdev *dev,
 }
 
 static int
-dpaa2_eventdev_eth_queue_del_all(const struct rte_eventdev *dev,
-			     const struct rte_eth_dev *eth_dev)
+dpaa2_eventdev_eth_queue_del(__rte_unused const struct rte_eventdev *dev,
+			     __rte_unused const struct rte_eth_dev *eth_dev,
+			     __rte_unused int32_t rx_queue_id)
 {
-	int i, ret;
-
 	EVENTDEV_INIT_FUNC_TRACE();
-
-	RTE_SET_USED(dev);
-
-	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
-		ret = dpaa2_eth_eventq_detach(eth_dev, i);
-		if (ret) {
-			DPAA2_EVENTDEV_ERR(
-				"Event queue detach failed: err(%d)", ret);
-			return ret;
-		}
-	}
 
 	return 0;
 }
-
-static int
-dpaa2_eventdev_eth_queue_del(const struct rte_eventdev *dev,
-			     const struct rte_eth_dev *eth_dev,
-			     int32_t rx_queue_id)
-{
-	int ret;
-
-	EVENTDEV_INIT_FUNC_TRACE();
-
-	if (rx_queue_id == -1)
-		return dpaa2_eventdev_eth_queue_del_all(dev, eth_dev);
-
-	ret = dpaa2_eth_eventq_detach(eth_dev, rx_queue_id);
-	if (ret) {
-		DPAA2_EVENTDEV_ERR(
-			"Event queue detach failed: err(%d)", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
 static int
 dpaa2_eventdev_eth_start(const struct rte_eventdev *dev,
 			 const struct rte_eth_dev *eth_dev)
@@ -850,15 +810,10 @@ dpaa2_eventdev_crypto_queue_add_all(const struct rte_eventdev *dev,
 		if (ret) {
 			DPAA2_EVENTDEV_ERR("dpaa2_sec_eventq_attach failed: ret %d\n",
 				    ret);
-			goto fail;
+			return ret;
 		}
 	}
 	return 0;
-fail:
-	for (i = (i - 1); i >= 0 ; i--)
-		dpaa2_sec_eventq_detach(cryptodev, i);
-
-	return ret;
 }
 
 static int
@@ -889,45 +844,11 @@ dpaa2_eventdev_crypto_queue_add(const struct rte_eventdev *dev,
 }
 
 static int
-dpaa2_eventdev_crypto_queue_del_all(const struct rte_eventdev *dev,
-			     const struct rte_cryptodev *cdev)
+dpaa2_eventdev_crypto_queue_del(__rte_unused const struct rte_eventdev *dev,
+			     __rte_unused const struct rte_cryptodev *cryptodev,
+			     __rte_unused int32_t rx_queue_id)
 {
-	int i, ret;
-
 	EVENTDEV_INIT_FUNC_TRACE();
-
-	RTE_SET_USED(dev);
-
-	for (i = 0; i < cdev->data->nb_queue_pairs; i++) {
-		ret = dpaa2_sec_eventq_detach(cdev, i);
-		if (ret) {
-			DPAA2_EVENTDEV_ERR(
-				"dpaa2_sec_eventq_detach failed:ret %d\n", ret);
-			return ret;
-		}
-	}
-
-	return 0;
-}
-
-static int
-dpaa2_eventdev_crypto_queue_del(const struct rte_eventdev *dev,
-			     const struct rte_cryptodev *cryptodev,
-			     int32_t rx_queue_id)
-{
-	int ret;
-
-	EVENTDEV_INIT_FUNC_TRACE();
-
-	if (rx_queue_id == -1)
-		return dpaa2_eventdev_crypto_queue_del_all(dev, cryptodev);
-
-	ret = dpaa2_sec_eventq_detach(cryptodev, rx_queue_id);
-	if (ret) {
-		DPAA2_EVENTDEV_ERR(
-			"dpaa2_sec_eventq_detach failed: ret: %d\n", ret);
-		return ret;
-	}
 
 	return 0;
 }
@@ -1003,17 +924,19 @@ dpaa2_eventdev_txa_enqueue(void *port,
 			   struct rte_event ev[],
 			   uint16_t nb_events)
 {
-	struct rte_mbuf *m = (struct rte_mbuf *)ev[0].mbuf;
+	void *txq[32];
+	struct rte_mbuf *m[32];
 	uint8_t qid, i;
 
 	RTE_SET_USED(port);
 
 	for (i = 0; i < nb_events; i++) {
-		qid = rte_event_eth_tx_adapter_txq_get(m);
-		rte_eth_tx_burst(m->port, qid, &m, 1);
+		m[i] = (struct rte_mbuf *)ev[i].mbuf;
+		qid = rte_event_eth_tx_adapter_txq_get(m[i]);
+		txq[i] = rte_eth_devices[m[i]->port].data->tx_queues[qid];
 	}
 
-	return nb_events;
+	return dpaa2_dev_tx_multi_txq_ordered(txq, m, nb_events);
 }
 
 static struct eventdev_ops dpaa2_eventdev_ops = {
@@ -1035,14 +958,14 @@ static struct eventdev_ops dpaa2_eventdev_ops = {
 	.dev_selftest     = test_eventdev_dpaa2,
 	.eth_rx_adapter_caps_get	= dpaa2_eventdev_eth_caps_get,
 	.eth_rx_adapter_queue_add	= dpaa2_eventdev_eth_queue_add,
-	.eth_rx_adapter_queue_del	= dpaa2_eventdev_eth_queue_del,
+	.eth_rx_adapter_queue_del       = dpaa2_eventdev_eth_queue_del,
 	.eth_rx_adapter_start		= dpaa2_eventdev_eth_start,
 	.eth_rx_adapter_stop		= dpaa2_eventdev_eth_stop,
 	.eth_tx_adapter_caps_get	= dpaa2_eventdev_tx_adapter_caps,
 	.eth_tx_adapter_create		= dpaa2_eventdev_tx_adapter_create,
 	.crypto_adapter_caps_get	= dpaa2_eventdev_crypto_caps_get,
 	.crypto_adapter_queue_pair_add	= dpaa2_eventdev_crypto_queue_add,
-	.crypto_adapter_queue_pair_del	= dpaa2_eventdev_crypto_queue_del,
+	.crypto_adapter_queue_pair_del  = dpaa2_eventdev_crypto_queue_del,
 	.crypto_adapter_start		= dpaa2_eventdev_crypto_start,
 	.crypto_adapter_stop		= dpaa2_eventdev_crypto_stop,
 };

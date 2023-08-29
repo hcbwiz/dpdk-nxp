@@ -33,6 +33,7 @@ INTERNAL {
 	fman_if_get_fdoff;
 	fman_if_get_maxfrm;
 	fman_if_get_sg_enable;
+	fman_if_get_rx_status;
 	fman_if_loopback_disable;
 	fman_if_loopback_enable;
 	fman_if_promiscuous_disable;
@@ -81,7 +82,6 @@ INTERNAL {
 	qman_irqsource_remove;
 	qman_modify_cgr;
 	qman_oos_fq;
-	qman_poll_dqrr;
 	qman_portal_dequeue;
 	qman_portal_poll_rx;
 	qman_query_fq_frm_cnt;

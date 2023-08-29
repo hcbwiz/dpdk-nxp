@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2014-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2017-2019 NXP
+ *   Copyright 2017-2022 NXP
  *
  */
 #ifndef __DPAA_ETHDEV_H__
@@ -32,13 +32,6 @@
 #define DPAA_MAX_RX_PKT_LEN  10240
 
 #define DPAA_SGT_MAX_ENTRIES 16 /* maximum number of entries in SG Table */
-
-/* Maximum SG segments supported on all cores*/
-#define DPAA_MAX_SGS 128
-/* SG pool size */
-#define DPAA_POOL_SIZE 2048
-/* SG pool cache size */
-#define DPAA_POOL_CACHE_SIZE 256
 
 /* RX queue tail drop threshold (CGR Based) in frame count */
 #define CGR_RX_PERFQ_THRESH 256
@@ -110,18 +103,6 @@
 
 #define FMC_FILE "/tmp/fmc.bin"
 
-extern struct rte_mempool *dpaa_tx_sg_pool;
-
-/* structure to free external and indirect
- * buffers.
- */
-struct dpaa_sw_buf_free {
-	/* To which packet this segment belongs */
-	uint16_t pkt_id;
-	/* The actual segment */
-	struct rte_mbuf *seg;
-};
-
 /* Each network interface is represented by one of these */
 struct dpaa_if {
 	int valid;
@@ -130,6 +111,7 @@ struct dpaa_if {
 	struct qman_fq *rx_queues;
 	struct qman_cgr *cgr_rx;
 	struct qman_fq *tx_queues;
+	struct qman_fq *tx_conf_queues;
 	struct qman_cgr *cgr_tx;
 	struct qman_fq debug_queues[2];
 	uint16_t nb_rx_queues;
@@ -141,6 +123,14 @@ struct dpaa_if {
 	void *netenv_handle;
 	void *scheme_handle[2];
 	uint32_t scheme_count;
+	/*stores timestamp of last received packet on dev*/
+	uint64_t rx_timestamp;
+	/*stores timestamp of last received tx confirmation packet on dev*/
+	uint64_t tx_timestamp;
+	/* stores pointer to next tx_conf queue that should be processed,
+	 * it corresponds to last packet transmitted
+	 */
+	struct qman_fq *next_tx_conf_queue;
 
 	void *vsp_handle[DPAA_VSP_PROFILE_MAX_NUM];
 	uint32_t vsp_bpid[DPAA_VSP_PROFILE_MAX_NUM];
@@ -210,6 +200,31 @@ dpaa_rx_cb_atomic(void *event,
 		  struct qman_fq *fq,
 		  const struct qm_dqrr_entry *dqrr,
 		  void **bufs);
+
+int
+dpaa_timesync_enable(struct rte_eth_dev *dev);
+
+int
+dpaa_timesync_disable(struct rte_eth_dev *dev);
+
+int
+dpaa_timesync_read_time(struct rte_eth_dev *dev,
+		struct timespec *timestamp);
+
+int
+dpaa_timesync_write_time(struct rte_eth_dev *dev,
+		const struct timespec *timestamp);
+int
+dpaa_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta);
+
+int
+dpaa_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
+		struct timespec *timestamp);
+
+int
+dpaa_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
+		struct timespec *timestamp,
+		uint32_t flags __rte_unused);
 
 /* PMD related logs */
 extern int dpaa_logtype_pmd;

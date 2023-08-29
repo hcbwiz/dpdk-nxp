@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017,2019 NXP
+ *   Copyright 2017,2019,2023 NXP
  *
  */
 
@@ -50,6 +50,8 @@ dpaa_mbuf_create_pool(struct rte_mempool *mp)
 	struct bman_pool_params params = {
 		.flags = BMAN_POOL_FLAG_DYNAMIC_BPID
 	};
+	unsigned lcore_id;
+	struct rte_mempool_cache *cache;
 
 	MEMPOOL_INIT_FUNC_TRACE();
 
@@ -98,6 +100,10 @@ dpaa_mbuf_create_pool(struct rte_mempool *mp)
 	rte_dpaa_bpid_info[bpid].mp = mp;
 	rte_dpaa_bpid_info[bpid].bpid = bpid;
 	rte_dpaa_bpid_info[bpid].size = mp->elt_size;
+#ifdef RTE_LIBRTE_DPAA_ERRATA_LS1043_A010022
+	if (dpaa_svr_family_1 == SVR_LS1043A_FAMILY)
+		rte_dpaa_bpid_info[bpid].size -= LS1043_MAX_BUF_OFFSET;
+#endif
 	rte_dpaa_bpid_info[bpid].bp = bp;
 	rte_dpaa_bpid_info[bpid].meta_data_size =
 		sizeof(struct rte_mbuf) + rte_pktmbuf_priv_size(mp);
@@ -117,6 +123,18 @@ dpaa_mbuf_create_pool(struct rte_mempool *mp)
 	rte_memcpy(bp_info, (void *)&rte_dpaa_bpid_info[bpid],
 		   sizeof(struct dpaa_bp_info));
 	mp->pool_data = (void *)bp_info;
+	/* Update per core mempool cache threshold to optimal value which is
+	 * number of buffers that can be released to HW buffer pool in
+	 * a single API call.
+	 */
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		cache = &mp->local_cache[lcore_id];
+		DPAA_MEMPOOL_DEBUG("lCore %d: cache->flushthresh %d -> %d\n",
+							lcore_id, cache->flushthresh,
+							(uint32_t)(cache->size + DPAA_MBUF_MAX_ACQ_REL));
+		if (cache->flushthresh)
+			cache->flushthresh = cache->size + DPAA_MBUF_MAX_ACQ_REL;
+	}
 
 	DPAA_MEMPOOL_INFO("BMAN pool created for bpid =%d", bpid);
 	return 0;

@@ -10,6 +10,12 @@
 #define CRYPTODEV_NAME_DPAA_SEC_PMD	crypto_dpaa_sec
 /**< NXP DPAA - SEC PMD device name */
 
+#define SEC_BASE_ADDR		0x1700000
+#define MAP_SIZE		0x100000
+#define BLOCK_OFFSET		0x10000
+#define CMD_REG			0x4
+#define QICTL_DQEN		0x01
+#define QI_BLOCK_NUMBER		7
 #define MAX_DPAA_CORES		4
 #define NUM_POOL_CHANNELS	4
 #define DPAA_SEC_BURST		7
@@ -545,6 +551,36 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.max = 12,
 					.increment = 0
 				},
+			}, }
+		}, }
+	},
+	{       /* AES GMAC (AEAD) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
+			{.aead = {
+				.algo = RTE_CRYPTO_AEAD_AES_GMAC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.digest_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.aad_size = {
+					.min = 0,
+					.max = 65535,
+					.increment = 1
+				},
+				.iv_size = {
+					.min = 12,
+					.max = 16,
+					.increment = 4
+				}
 			}, }
 		}, }
 	},
