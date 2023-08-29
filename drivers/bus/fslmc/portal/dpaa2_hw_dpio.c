@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- *
- *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ * Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
+ * Copyright 2016-2023 NXP
  *
  */
 #include <unistd.h>
@@ -85,6 +84,19 @@ static int dpaa2_cluster_sz = 2;
  * Cluster 3 (ID = x06) : CPU12, CPU13;
  * Cluster 4 (ID = x07) : CPU14, CPU15;
  */
+
+static struct dpaa2_dpio_dev *get_dpio_dev_from_id(int32_t dpio_id)
+{
+	struct dpaa2_dpio_dev *dpio_dev = NULL;
+
+	/* Get DPIO dev handle from list using index */
+	TAILQ_FOREACH(dpio_dev, &dpio_dev_list, next) {
+		if (dpio_dev->hw_id == dpio_id)
+			break;
+	}
+
+	return dpio_dev;
+}
 
 static int
 dpaa2_get_core_id(void)
@@ -225,6 +237,19 @@ static int
 dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 {
 	int sdest, ret;
+	pid_t tid;
+	char command[COMMAND_LEN];
+
+	/*
+	 *  In case of running DPDK on the Virtual Machine the Stashing
+	 *  Destination gets set in the H/W w.r.t. the Virtual CPU ID's.
+	 *  As a W.A. environment variable HOST_START_CPU tells which
+	 *  the offset of the host start core of the Virtual Machine threads.
+	 */
+	if (getenv("DPAA2_HOST_START_CPU")) {
+		cpu_id += atoi(getenv("DPAA2_HOST_START_CPU"));
+		cpu_id = cpu_id % NUM_HOST_CPUS;
+	}
 
 	/* Set the STASH Destination depending on Current CPU ID.
 	 * Valid values of SDEST are 4,5,6,7. Where,
@@ -245,8 +270,25 @@ dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 		DPAA2_BUS_ERR("Interrupt registration failed for dpio");
 		return -1;
 	}
-	dpaa2_affine_dpio_intr_to_respective_core(dpio_dev->hw_id, cpu_id);
 #endif
+
+	if (getenv("NXP_CHRT_PERF_MODE")) {
+		tid = rte_gettid();
+		snprintf(command, COMMAND_LEN, "chrt -p 90 %d", tid);
+		ret = system(command);
+		if (ret < 0)
+			DPAA2_BUS_WARN("Failed to change thread priority");
+		else
+			DPAA2_BUS_DEBUG(" %s command is executed", command);
+
+		/* Above would only work when the CPU governors are configured
+		 * for performance mode; It is assumed that this is taken
+		 * care of by the application.
+		 */
+#ifdef RTE_EVENT_DPAA2
+		dpaa2_affine_dpio_intr_to_respective_core(dpio_dev->hw_id, cpu_id);
+#endif
+	}
 
 	return 0;
 }
@@ -357,6 +399,26 @@ static void dpaa2_portal_finish(void *arg)
 	dpaa2_put_qbman_swp(RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev);
 
 	pthread_setspecific(dpaa2_portal_key, NULL);
+}
+
+static void
+dpaa2_close_dpio_device(int object_id)
+{
+	struct dpaa2_dpio_dev *dpio_dev = NULL;
+
+	dpio_dev = get_dpio_dev_from_id((int32_t)object_id);
+
+	if (dpio_dev) {
+		if (dpio_dev->dpio) {
+			dpio_disable(dpio_dev->dpio, CMD_PRI_LOW,
+				     dpio_dev->token);
+			dpio_close(dpio_dev->dpio, CMD_PRI_LOW,
+				   dpio_dev->token);
+			rte_free(dpio_dev->dpio);
+		}
+		TAILQ_REMOVE(&dpio_dev_list, dpio_dev, next);
+		rte_free(dpio_dev);
+	}
 }
 
 static int
@@ -616,7 +678,7 @@ dpaa2_free_eq_descriptors(void)
 
 		if (qbman_result_eqresp_rc(eqresp)) {
 			txq = eqresp_meta->dpaa2_q;
-			txq->cb_eqresp_free(dpio_dev->eqresp_ci);
+			txq->cb_eqresp_free(dpio_dev->eqresp_ci, txq);
 		}
 		qbman_result_eqresp_set_rspid(eqresp, 0);
 
@@ -637,6 +699,7 @@ dpaa2_free_eq_descriptors(void)
 static struct rte_dpaa2_object rte_dpaa2_dpio_obj = {
 	.dev_type = DPAA2_IO,
 	.create = dpaa2_create_dpio_device,
+	.close = dpaa2_close_dpio_device,
 };
 
 RTE_PMD_REGISTER_DPAA2_OBJECT(dpio, rte_dpaa2_dpio_obj);

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2020 NXP
+ *   Copyright 2016-2022 NXP
  *
  */
 
@@ -147,7 +147,8 @@ typedef void (dpaa2_queue_cb_dqrr_t)(struct qbman_swp *swp,
 		struct dpaa2_queue *rxq,
 		struct rte_event *ev);
 
-typedef void (dpaa2_queue_cb_eqresp_free_t)(uint16_t eqresp_ci);
+typedef void (dpaa2_queue_cb_eqresp_free_t)(uint16_t eqresp_ci,
+					struct dpaa2_queue *dpaa2_q);
 
 struct dpaa2_queue {
 	struct rte_mempool *mb_pool; /**< mbuf pool to populate RX ring. */
@@ -164,6 +165,7 @@ struct dpaa2_queue {
 	uint64_t err_pkts;
 	union {
 		struct queue_storage_info_t *q_storage;
+		struct queue_storage_info_t *per_core_q_storage[RTE_MAX_LCORE];
 		struct qbman_result *cscn;
 	};
 	struct rte_event ev;
@@ -174,8 +176,9 @@ struct dpaa2_queue {
 	struct dpaa2_queue *tx_conf_queue;
 	int32_t eventfd;	/*!< Event Fd of this queue */
 	uint16_t nb_desc;
-	uint16_t resv;
+	uint16_t tm_sw_td; 	/* TM software taildrop */
 	uint64_t offloads;
+	uint64_t lpbk_cntx;
 } __rte_cache_aligned;
 
 struct swp_active_dqs {
@@ -186,6 +189,18 @@ struct swp_active_dqs {
 #define NUM_MAX_SWP 64
 
 extern struct swp_active_dqs rte_global_active_dqs_list[NUM_MAX_SWP];
+
+/**
+ * A structure describing a DPAA2 container.
+ */
+struct dpaa2_dprc_dev {
+	TAILQ_ENTRY(dpaa2_dprc_dev) next;
+		/**< Pointer to Next device instance */
+	const char *name;
+	struct fsl_mc_io dprc;  /** handle to DPRC portal object */
+	uint16_t token;
+	uint32_t dprc_id; /*HW ID for DPRC object */
+};
 
 struct dpaa2_dpci_dev {
 	TAILQ_ENTRY(dpaa2_dpci_dev) next;

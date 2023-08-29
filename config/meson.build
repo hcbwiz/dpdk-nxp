@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
+# Copyright 2022 NXP
 
 # check the OS is supported, rather than going any further
 supported_exec_envs = ['freebsd', 'linux', 'windows']
@@ -137,7 +138,7 @@ endif
 
 toolchain = cc.get_id()
 dpdk_conf.set_quoted('RTE_TOOLCHAIN', toolchain)
-dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper().underscorify(), 1)
+dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
 
 dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
 dpdk_conf.set('RTE_ARCH_32', cc.sizeof('void *') == 4)
@@ -189,7 +190,7 @@ if find_libnuma
 endif
 
 has_libfdt = 0
-fdt_dep = cc.find_library('fdt', required: false)
+fdt_dep = cc.find_library('libfdt', required: false)
 if fdt_dep.found() and cc.has_header('fdt.h')
     dpdk_conf.set10('RTE_HAS_LIBFDT', true)
     has_libfdt = 1
@@ -197,12 +198,11 @@ if fdt_dep.found() and cc.has_header('fdt.h')
     dpdk_extra_ldflags += '-lfdt'
 endif
 
-libexecinfo = cc.find_library('execinfo', required: false)
-if libexecinfo.found()
+libexecinfo = cc.find_library('libexecinfo', required: false)
+if libexecinfo.found() and cc.has_header('execinfo.h')
     add_project_link_arguments('-lexecinfo', language: 'c')
     dpdk_extra_ldflags += '-lexecinfo'
 endif
-dpdk_conf.set('RTE_BACKTRACE', cc.has_header('execinfo.h') or is_windows)
 
 libarchive = dependency('libarchive', required: false, method: 'pkg-config')
 if libarchive.found()
@@ -297,10 +297,12 @@ endforeach
 dpdk_conf.set('RTE_MAX_ETHPORTS', get_option('max_ethports'))
 dpdk_conf.set('RTE_LIBEAL_USE_HPET', get_option('use_hpet'))
 dpdk_conf.set('RTE_ENABLE_TRACE_FP', get_option('enable_trace_fp'))
+dpdk_conf.set('RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', get_option('dpaa2_use_phys_iova'))
+dpdk_conf.set('RTE_LSINIC_PCIE_RAW_TEST_ENABLE', get_option('lsxinic_pcie_raw_test'))
+dpdk_conf.set('RTE_LSINIC_PKT_MERGE_ACROSS_PCIE', get_option('lsinic_pkt_merge_across_pcie'))
 # values which have defaults which may be overridden
 dpdk_conf.set('RTE_MAX_VFIO_GROUPS', 64)
 dpdk_conf.set('RTE_DRIVER_MEMPOOL_BUCKET_SIZE_KB', 64)
-dpdk_conf.set('RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', true)
 if dpdk_conf.get('RTE_ARCH_64')
     dpdk_conf.set('RTE_MAX_MEM_MB', 524288)
 else # for 32-bit we need smaller reserved memory areas

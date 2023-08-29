@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- *
- *   Copyright 2017-2020 NXP
- *
+ * Copyright 2017-2021 NXP
  */
 /* System headers */
 #include <stdio.h>
@@ -161,8 +159,61 @@ dpaa_create_device_list(void)
 	struct fm_eth_port_cfg *cfg;
 	struct fman_if *fman_intf;
 
+	rte_dpaa_bus.device_count = 0;
+
+	/* Creating OL Device */
+	if (getenv("OLDEV_ENABLED")) {
+		dev = calloc(1, sizeof(struct rte_dpaa_device));
+		if (!dev) {
+			DPAA_BUS_LOG(ERR, "Failed to allocate OL devices");
+			return -1;
+		}
+
+		dev->device_type = FSL_DPAA_OL;
+		dev->id.ol_id = 0;
+		dev->id.dev_id = rte_dpaa_bus.device_count;
+
+		/* Create device name */
+		memset(dev->name, 0, RTE_ETH_NAME_MAX_LEN);
+		sprintf(dev->name, "oldev%d", (dev->id.ol_id + 1));
+		DPAA_BUS_LOG(INFO, "%s oldev added", dev->name);
+		dev->device.name = dev->name;
+		dev->device.devargs = dpaa_devargs_lookup(dev);
+
+		dpaa_add_to_device_list(dev);
+		rte_dpaa_bus.device_count++;
+	}
+
+	if (!dpaa_netcfg && getenv("OLDEV_ENABLED"))
+		return 0;
+
+	rte_dpaa_bus.device_count = 0;
+
+	/* Creating OL Device */
+	if (getenv("OLDEV_ENABLED")) {
+		dev = calloc(1, sizeof(struct rte_dpaa_device));
+		if (!dev) {
+			DPAA_BUS_LOG(ERR, "Failed to allocate OL devices");
+			return -1;
+		}
+
+		dev->device_type = FSL_DPAA_OL;
+		dev->id.ol_id = 0;
+		dev->id.dev_id = rte_dpaa_bus.device_count;
+
+		/* Create device name */
+		memset(dev->name, 0, RTE_ETH_NAME_MAX_LEN);
+		sprintf(dev->name, "oldev%d", (dev->id.ol_id + 1));
+		DPAA_BUS_LOG(INFO, "%s oldev added", dev->name);
+		dev->device.name = dev->name;
+		dev->device.devargs = dpaa_devargs_lookup(dev);
+
+		dpaa_add_to_device_list(dev);
+		rte_dpaa_bus.device_count++;
+	}
+
 	/* Creating Ethernet Devices */
-	for (i = 0; i < dpaa_netcfg->num_ethports; i++) {
+	for (i = 0; dpaa_netcfg && (i < dpaa_netcfg->num_ethports); i++) {
 		dev = calloc(1, sizeof(struct rte_dpaa_device));
 		if (!dev) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate ETH devices");
@@ -201,7 +252,7 @@ dpaa_create_device_list(void)
 		dpaa_add_to_device_list(dev);
 	}
 
-	rte_dpaa_bus.device_count = i;
+	rte_dpaa_bus.device_count += i;
 
 	/* Unlike case of ETH, RTE_LIBRTE_DPAA_MAX_CRYPTODEV SEC devices are
 	 * constantly created only if "sec" property is found in the device
@@ -209,7 +260,7 @@ dpaa_create_device_list(void)
 	 * interfaces) that can be created.
 	 */
 
-	if (dpaa_sec_available()) {
+	if (dpaa_sec_available() || getenv("DPAA_SEC_DISABLE")) {
 		DPAA_BUS_LOG(INFO, "DPAA SEC devices are not available");
 		return 0;
 	}
@@ -293,6 +344,8 @@ dpaa_clean_device_list(void)
 	}
 }
 
+#define COMMAND_LEN	256
+
 int rte_dpaa_portal_init(void *arg)
 {
 	static const struct rte_mbuf_dynfield dpaa_seqn_dynfield_desc = {
@@ -302,6 +355,8 @@ int rte_dpaa_portal_init(void *arg)
 	};
 	unsigned int cpu, lcore = rte_lcore_id();
 	int ret;
+	pid_t tid;
+	char command[COMMAND_LEN];
 
 	BUS_INIT_FUNC_TRACE();
 
@@ -355,6 +410,21 @@ int rte_dpaa_portal_init(void *arg)
 	DPAA_PER_LCORE_PORTAL->qman_idx = qman_get_portal_index();
 	DPAA_PER_LCORE_PORTAL->bman_idx = bman_get_portal_index();
 	DPAA_PER_LCORE_PORTAL->tid = rte_gettid();
+
+	if (getenv("NXP_CHRT_PERF_MODE")) {
+		tid = rte_gettid();
+		snprintf(command, COMMAND_LEN, "chrt -p 90 %d", tid);
+		ret = system(command);
+		if (ret < 0)
+			DPAA_BUS_WARN("Failed to change thread priority");
+		else
+			DPAA_BUS_DEBUG(" %s command is executed", command);
+
+		/* Above would only work when the CPU governors are configured
+		 * for performance mode; It is assumed that this is taken
+		 * care of by the application.
+		 */
+	}
 
 	ret = pthread_setspecific(dpaa_portal_key,
 				  (void *)DPAA_PER_LCORE_PORTAL);
@@ -560,7 +630,7 @@ rte_dpaa_bus_dev_build(void)
 
 	/* Get the interface configurations from device-tree */
 	dpaa_netcfg = netcfg_acquire();
-	if (!dpaa_netcfg) {
+	if (!dpaa_netcfg && !getenv("OLDEV_ENABLED")) {
 		DPAA_BUS_LOG(ERR,
 			"netcfg failed: /dev/fsl_usdpaa device not available");
 		DPAA_BUS_WARN(
@@ -570,17 +640,20 @@ rte_dpaa_bus_dev_build(void)
 
 	RTE_LOG(NOTICE, EAL, "DPAA Bus Detected\n");
 
-	if (!dpaa_netcfg->num_ethports) {
-		DPAA_BUS_LOG(INFO, "NO DPDK mapped net interfaces available");
-		/* This is not an error */
+	if (!getenv("OLDEV_ENABLED")) {
+		if (!dpaa_netcfg->num_ethports) {
+			DPAA_BUS_LOG(INFO, "NO DPDK mapped net interfaces available");
+			/* This is not an error */
+		}
 	}
 
 #ifdef RTE_LIBRTE_DPAA_DEBUG_DRIVER
 	dump_netcfg(dpaa_netcfg);
 #endif
-
-	DPAA_BUS_LOG(DEBUG, "Number of ethernet devices = %d",
-		     dpaa_netcfg->num_ethports);
+	if (!getenv("OLDEV_ENABLED")) {
+		DPAA_BUS_LOG(DEBUG, "Number of ethernet devices = %d",
+			     dpaa_netcfg->num_ethports);
+	}
 	ret = dpaa_create_device_list();
 	if (ret) {
 		DPAA_BUS_LOG(ERR, "Unable to create device list. (%d)", ret);
@@ -685,8 +758,9 @@ rte_dpaa_bus_probe(void)
 			     dev->device.devargs->policy == RTE_DEV_ALLOWED)) {
 				ret = drv->probe(drv, dev);
 				if (ret) {
-					DPAA_BUS_ERR("unable to probe:%s",
-						     dev->name);
+					if (!getenv("OLDEV_ENABLED"))
+						DPAA_BUS_ERR("unable to probe:%s",
+							     dev->name);
 				} else {
 					dev->driver = drv;
 					dev->device.driver = &drv->driver;

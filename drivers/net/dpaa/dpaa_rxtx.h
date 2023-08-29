@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2017,2020-2021 NXP
+ *   Copyright 2017,2020-2022 NXP
  *
  */
 
@@ -47,6 +47,7 @@
  *	L4R 0xE0 -
  *		0x20 - TCP
  *		0x40 - UDP
+ *		0x60 - IPsec
  *		0x80 - SCTP
  *	L3R 0xEDC4 (in Big Endian) -
  *		0x8000 - IPv4
@@ -63,6 +64,7 @@
  */
 #define DPAA_PARSE_MASK			0x00F044EF00800000
 #define DPAA_PARSE_VLAN_MASK		0x0000000000700000
+#define DPAA_PARSE_ESP_MASK		0x0008000000000000
 
 /* Parsed values (Little Endian) */
 #define DPAA_PKT_TYPE_NONE		0x0000000000000000
@@ -137,6 +139,10 @@
 			(0x0020000000000000 | DPAA_PKT_TYPE_TUNNEL_4_6)
 #define DPAA_PKT_TYPE_TUNNEL_6_4_TCP \
 			(0x0020000000000000 | DPAA_PKT_TYPE_TUNNEL_6_4)
+#define DPAA_PKT_TYPE_IPSEC_IPV4 \
+			(0x0060000000000000 | DPAA_PKT_TYPE_IPV4)
+#define DPAA_PKT_TYPE_IPSEC_IPV6 \
+			(0x0060000000000000 | DPAA_PKT_TYPE_IPV6)
 
 /* Checksum Errors */
 #define DPAA_PKT_IP_CSUM_ERR		0x0000400200000000
@@ -254,7 +260,7 @@ struct dpaa_eth_parse_results_t {
 struct annotations_t {
 	uint8_t reserved[DEFAULT_RX_ICEOF];
 	struct dpaa_eth_parse_results_t parse;	/**< Pointer to Parsed result*/
-	uint64_t reserved1;
+	uint64_t timestamp;
 	uint64_t hash;			/**< Hash Result */
 };
 
@@ -274,6 +280,8 @@ uint16_t dpaa_eth_queue_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs);
 uint16_t dpaa_eth_queue_tx_slow(void *q, struct rte_mbuf **bufs,
 				uint16_t nb_bufs);
 uint16_t dpaa_eth_queue_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs);
+
+void dpaa_eth_tx_conf(void *q);
 
 uint16_t dpaa_eth_tx_drop_all(void *q  __rte_unused,
 			      struct rte_mbuf **bufs __rte_unused,

@@ -12,6 +12,7 @@ EXPERIMENTAL {
 
 	# added in 21.05
 	rte_pmd_dpaa2_mux_rx_frame_len;
+	rte_pmd_dpaa2_set_opr;
 	# added in 21.08
 	rte_pmd_dpaa2_thread_init;
 	# added in 21.11
@@ -21,8 +22,10 @@ EXPERIMENTAL {
 INTERNAL {
 	global:
 
+	dpaa2_dev_is_dpaa2;
+	dpaa2_dev_recycle_qp_setup;
+	dpaa2_dev_tx_multi_txq_ordered;
 	dpaa2_eth_eventq_attach;
-	dpaa2_eth_eventq_detach;
 
 	local: *;
 };

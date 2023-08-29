@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016,2018-2019 NXP
+ *   Copyright 2016,2018-2023 NXP
  *
  */
 
@@ -136,10 +136,6 @@ scan_one_fslmc_device(char *dev_name)
 	if (!dev_name)
 		return ret;
 
-	/* Ignore the Container name itself */
-	if (!strncmp("dprc", dev_name, 4))
-		return 0;
-
 	/* Creating a temporary copy to perform cut-parse over string */
 	dup_dev_name = strdup(dev_name);
 	if (!dup_dev_name) {
@@ -197,6 +193,8 @@ scan_one_fslmc_device(char *dev_name)
 		dev->dev_type = DPAA2_MUX;
 	else if (!strncmp("dprtc", t_ptr, 5))
 		dev->dev_type = DPAA2_DPRTC;
+	else if (!strncmp("dprc", t_ptr, 4))
+		dev->dev_type = DPAA2_DPRC;
 	else
 		dev->dev_type = DPAA2_UNKNOWN;
 
@@ -320,6 +318,7 @@ rte_fslmc_scan(void)
 	struct dirent *entry;
 	static int process_once;
 	int groupid;
+	char *group_name;
 
 	if (process_once) {
 		DPAA2_BUS_DEBUG("Fslmc bus already scanned. Not rescanning");
@@ -327,16 +326,30 @@ rte_fslmc_scan(void)
 	}
 	process_once = 1;
 
-	ret = fslmc_get_container_group(&groupid);
+	/* Now we only support single group per process.*/
+	group_name = getenv("DPRC");
+	if (!group_name) {
+		DPAA2_BUS_DEBUG("DPAA2: DPRC not available");
+		return -EINVAL;
+	}
+
+	ret = fslmc_get_container_group(group_name, &groupid);
 	if (ret != 0)
 		goto scan_fail;
 
 	/* Scan devices on the group */
-	sprintf(fslmc_dirpath, "%s/%s", SYSFS_FSL_MC_DEVICES, fslmc_container);
+	sprintf(fslmc_dirpath, "%s/%s", SYSFS_FSL_MC_DEVICES, group_name);
 	dir = opendir(fslmc_dirpath);
 	if (!dir) {
 		DPAA2_BUS_ERR("Unable to open VFIO group directory");
 		goto scan_fail;
+	}
+
+	/* Scan the DPRC container object */
+	ret = scan_one_fslmc_device(group_name);
+	if (ret != 0) {
+		/* Error in parsing directory - exit gracefully */
+		goto scan_fail_cleanup;
 	}
 
 	while ((entry = readdir(dir)) != NULL) {
@@ -377,6 +390,18 @@ rte_fslmc_match(struct rte_dpaa2_driver *dpaa2_drv,
 		return 0;
 
 	return 1;
+}
+
+static int
+rte_fslmc_close(void)
+{
+	int ret = 0;
+
+	ret = fslmc_vfio_close_group();
+	if (ret)
+		DPAA2_BUS_ERR("Unable to close devices %d", ret);
+
+	return 0;
 }
 
 static int
@@ -663,6 +688,7 @@ struct rte_fslmc_bus rte_fslmc_bus = {
 	.bus = {
 		.scan = rte_fslmc_scan,
 		.probe = rte_fslmc_probe,
+		.close = rte_fslmc_close,
 		.parse = rte_fslmc_parse,
 		.find_device = rte_fslmc_find_device,
 		.get_iommu_class = rte_dpaa2_get_iommu_class,
