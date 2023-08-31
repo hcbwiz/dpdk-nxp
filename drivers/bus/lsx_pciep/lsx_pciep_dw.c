@@ -1044,6 +1044,48 @@ pcie_dw_fun_init(struct lsx_pciep_hw_low *hw,
 	return 0;
 }
 
+static int
+pcie_dw_fun_init_ext(struct lsx_pciep_hw_low *hw,
+	int pf, uint16_t sub_vendor_id, uint16_t sub_device_id)
+{
+	struct pcie_ctrl_cfg *cfg;
+	uint32_t tmp;
+
+	if (!hw->is_sriov && pf > PF0_IDX) {
+		LSX_PCIEP_BUS_ERR("%s: PCIe%d is NONE-SRIOV",
+			__func__, hw->index);
+		return -EIO;
+	}
+
+	if (pf != PF0_IDX && pf != PF1_IDX) {
+		LSX_PCIEP_BUS_ERR("%s: Invalid PF ID(%d)",
+			__func__, pf);
+		return -EIO;
+	}
+
+	tmp = PCIE_DW_DBI_WR_ENA;
+	lsx_pciep_write_config(hw->dbi_vir, &tmp,
+		sizeof(uint32_t),
+		PCIE_DW_MISC_CONTROL_1_OFF_OFFSET);
+
+	cfg = (void *)(hw->dbi_vir + pf * hw->dbi_pf_size);
+	if (sub_vendor_id && sub_vendor_id != PCI_ANY_ID) {
+		lsx_pciep_write_config(&cfg->sub_vendor_id,
+			&sub_vendor_id, sizeof(uint16_t), 0);
+	}
+	if (sub_device_id && sub_device_id != PCI_ANY_ID) {
+		lsx_pciep_write_config(&cfg->sub_device_id,
+			&sub_device_id, sizeof(uint16_t), 0);
+	}
+
+	tmp = PCIE_DW_DBI_WR_DIS;
+	lsx_pciep_write_config(hw->dbi_vir, &tmp,
+		sizeof(uint32_t),
+		PCIE_DW_MISC_CONTROL_1_OFF_OFFSET);
+
+	return 0;
+}
+
 static uint64_t
 pcie_dw_ob_unmapped(struct lsx_pciep_hw_low *hw)
 {
@@ -1329,6 +1371,7 @@ static struct lsx_pciep_ops pcie_dw_ops = {
 	.pcie_config = pcie_dw_config,
 	.pcie_deconfig = pcie_dw_deconfig,
 	.pcie_fun_init = pcie_dw_fun_init,
+	.pcie_fun_init_ext = pcie_dw_fun_init_ext,
 	.pcie_disable_ob_win = pcie_dw_disable_ob_win,
 	.pcie_disable_ib_win = pcie_dw_disable_ib_win,
 	.pcie_map_ob_win = pcie_dw_map_ob_win,
